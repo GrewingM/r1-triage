@@ -1,0 +1,23 @@
+[Unit]
+Description=Rabbit R1 relay agent (rabbit-agent) for OpenClaw
+Documentation=https://github.com/GrewingM/r1-triage
+After=network-online.target openclaw-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The installer's launcher; it resolves the current version under ~/.rabbit-agent/versions/
+ExecStart=%h/.rabbit-agent/bin/rabbit-agent run
+WorkingDirectory=%h/.rabbit-agent
+# The agent spawns `openclaw` with a minimal environment: keep both the /usr/local symlink and linuxbrew on PATH
+Environment=PATH=/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin
+Environment=HOME=%h
+# Self-updates exit the process; Restart=always brings the new version up
+Restart=always
+RestartSec=5
+StandardOutput=null
+StandardError=append:%h/.rabbit-agent/logs/rabbit-agent-crash.log
+# OnFailure=notify-telegram@%n.service   # optional: your own failure hook
+
+[Install]
+WantedBy=default.target
