@@ -2,6 +2,17 @@
 
 All notable changes to r1-triage. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [2.1.0] - 2026-11-12
+
+Tested against OpenClaw 2026.9.4, rabbit-agent 0.1.17, rabbitOS 2.3.
+
+### Fixed
+- **Check 1c advised re-registering the node when the agent was simply stopped.** The hint now distinguishes "running but not registered" from "not running at all", and drops to INFO in the latter case.
+- **Check 1b reported a crash loop as healthy.** It printed the unit state inside an `[OK]` line, so a looping agent read as `[OK] rabbit-agent is a systemd user unit (activating)`. `activating` is now a FAIL and overrides check 1, because `pgrep` intermittently catches a process mid-restart and wrongly reports the agent as running. A real two-day outage passed this check unnoticed.
+
+### Added
+- **Check 1d: read the agent's own log when it is down.** A crash-looping agent never writes `runtime/rabbit-agent.status.json`, so check 1c sees nothing and the cause - sitting in plain text in `logs/agent.log` - was never surfaced. The last `error` line from the final 200 log lines is now printed, and `No connection info` is special-cased with the exact `rabbit-agent register --token=` fix. That is the failure a self-update can cause: the agent starts, finds no pairing, exits **0**, and systemd restarts it forever. Nothing looks wrong from the outside.
+
 ## [2.0.0] — 2026-09-04
 
 Tested against OpenClaw 2026.8.2, rabbit-agent 0.1.10, rabbitOS 2.3.

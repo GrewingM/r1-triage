@@ -9,10 +9,10 @@
 #         PROBE=0 bash triage.sh    (skip the live ACP probe; it costs one short model turn)
 #         LIVE_MAX_AGE=21600        (seconds; an open job older than this is a leftover, not a session)
 #
-# Tested against: OpenClaw 2026.8.2, rabbit-agent 0.1.10, rabbitOS 2.3
+# Tested against: OpenClaw 2026.9.4, rabbit-agent 0.1.17, rabbitOS 2.3
 # License: MIT
 set -u
-VERSION="2.0.0"
+VERSION="2.1.0"
 RABBIT_DIR="${RABBIT_DIR:-$HOME/.rabbit-agent}"
 # The agent resolves `openclaw` through a minimal PATH; /usr/local/bin is what it sees first.
 OPENCLAW_BIN="${OPENCLAW_BIN:-$( [ -x /usr/local/bin/openclaw ] && echo /usr/local/bin/openclaw || command -v openclaw || echo /usr/local/bin/openclaw)}"
@@ -46,7 +46,18 @@ fi
 # 1b. Is it supervised? The installer starts it with nohup and relies on an @reboot crontab
 #     line that is not always written — an unsupervised agent dies at the next reboot.
 if systemctl --user is-enabled rabbit-agent.service >/dev/null 2>&1; then
-  ok "rabbit-agent is a systemd user unit ($(systemctl --user is-active rabbit-agent.service 2>/dev/null))"
+  UNIT_STATE=$(systemctl --user is-active rabbit-agent.service 2>/dev/null)
+  case "$UNIT_STATE" in
+    active)
+      ok "rabbit-agent is a systemd user unit (active)" ;;
+    activating)
+      # Restart loop. pgrep in check 1 can catch a process mid-restart and
+      # report success, so correct that verdict here rather than trusting it.
+      fail "rabbit-agent unit is '$UNIT_STATE' - crash-looping, not starting (NRestarts=$(systemctl --user show rabbit-agent -p NRestarts --value 2>/dev/null))"
+      AGENT_OK=0 ;;
+    *)
+      warn "rabbit-agent unit is '${UNIT_STATE:-unknown}'" ;;
+  esac
 elif crontab -l 2>/dev/null | grep -q "rabbit-agent"; then
   info "rabbit-agent restarted by crontab @reboot (works, but a systemd unit with Restart=always survives self-updates too)"
 else
@@ -60,8 +71,35 @@ if [ -r "$ST" ]; then
   STATUS=$(python3 -c "import json;d=json.load(open('$ST'));print(d.get('status','?'), d.get('version','?'), d.get('updatedAt','?'))" 2>/dev/null)
   case "$STATUS" in
     connected*) ok "control WS to Rabbit cloud: $STATUS" ;;
-    *)          warn "control WS status: ${STATUS:-unreadable} (agent up but not registered/connected → re-register from rabbithole > settings > nodes)" ;;
+    *)          if [ "$AGENT_OK" = 1 ]; then warn "control WS status: ${STATUS:-unreadable} (agent running but not registered - re-register from rabbithole > settings > nodes)"; else info "control WS status: ${STATUS:-unreadable} (agent is not running - see check 1)"; fi ;;
   esac
+fi
+
+# 1d. When the agent is down, the reason is usually in its own log - but a
+#     crash-looping agent never writes a status file, so check 1c sees nothing.
+#     The commonest cause after a self-update is a lost pairing: the agent
+#     starts, finds no connection info, exits 0, and systemd restarts it
+#     forever. A process that fails by succeeding looks fine from the outside.
+if [ "$AGENT_OK" = 0 ] && [ -r "$RABBIT_DIR/logs/agent.log" ]; then
+  LASTERR=$(tail -200 "$RABBIT_DIR/logs/agent.log" 2>/dev/null | python3 -c "
+import sys, json
+last = ''
+for line in sys.stdin:
+    try: d = json.loads(line)
+    except Exception: continue
+    if d.get('level') == 'error': last = str(d.get('message', ''))
+print(last)" 2>/dev/null)
+  if [ -n "$LASTERR" ]; then
+    echo "       last error in agent.log: $(echo "$LASTERR" | head -c 160)"
+    case "$LASTERR" in
+      *"No connection info"*)
+        fail "agent has LOST ITS PAIRING - a self-update can wipe it"
+        echo "       Fix: take a token from rabbithole > settings > nodes, then:"
+        echo "            $RABBIT_DIR/bin/rabbit-agent register --token=XXXX"
+        echo "            systemctl --user restart rabbit-agent"
+        echo "       Note: re-registering issues a NEW nodeId - delete the stale node." ;;
+    esac
+  fi
 fi
 
 # ---------------------------------------------------------------------------
